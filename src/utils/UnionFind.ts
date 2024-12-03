@@ -2,10 +2,17 @@ export class UnionFind {
   private parent: { [key: string]: string } = {}
   private rank: { [key: string]: number } = {}
 
+  makeSet(x: string) {
+    this.parent[x] = x
+    this.rank[x] = 0
+  }
+
   find(x: string): string {
-    if (!this.parent[x]) this.parent[x] = x
+    if (!this.parent[x]) {
+      this.makeSet(x)
+    }
     if (this.parent[x] !== x) {
-      this.parent[x] = this.find(this.parent[x])
+      this.parent[x] = this.find(this.parent[x]) // Path compression
     }
     return this.parent[x]
   }
@@ -13,11 +20,10 @@ export class UnionFind {
   union(x: string, y: string) {
     const rootX = this.find(x)
     const rootY = this.find(y)
-    if (rootX === rootY) return
+    
+    if (rootX === rootY) return // Already in same set
 
-    if (!this.rank[rootX]) this.rank[rootX] = 0
-    if (!this.rank[rootY]) this.rank[rootY] = 0
-
+    // Union by rank
     if (this.rank[rootX] < this.rank[rootY]) {
       this.parent[rootX] = rootY
     } else if (this.rank[rootX] > this.rank[rootY]) {
@@ -27,4 +33,12 @@ export class UnionFind {
       this.rank[rootX]++
     }
   }
-} 
+
+  getParentState(): Record<string, string> {
+    return { ...this.parent }
+  }
+
+  getRankState(): Record<string, number> {
+    return { ...this.rank }
+  }
+}
