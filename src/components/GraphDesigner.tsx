@@ -25,8 +25,7 @@ export function GraphDesigner() {
   const cyRef = useRef<HTMLDivElement>(null);
   const [cy, setCy] = useState<cytoscape.Core | null>(null);
   const [nodeName, setNodeName] = useState("");
-  const [sourceNode, setSourceNode] = useState("");
-  const [targetNode, setTargetNode] = useState("");
+  const [selectedNodes, setSelectedNodes] = useState<string[]>([]);
   const [nextNodeId, setNextNodeId] = useState(1);
   const [error, setError] = useState("");
   const [ufState, setUfState] = useState<{
@@ -55,7 +54,7 @@ export function GraphDesigner() {
       uf.union(source, target);
     });
 
-    // Get all components
+    // Get all components and their roots
     const components = new Map<string, string[]>();
     cy.nodes().forEach(node => {
       const root = uf.find(node.id());
@@ -65,13 +64,19 @@ export function GraphDesigner() {
       components.get(root)?.push(node.id());
     });
 
-    // Assign colors to components
+    // Assign colors to components and highlight roots
     let colorIndex = 0;
     components.forEach((nodes, root) => {
       const color = COLORS[colorIndex % COLORS.length];
       operations.push(`Component ${root}: ${nodes.join(", ")} (${color})`);
       nodes.forEach(nodeId => {
-        cy.getElementById(nodeId).style('background-color', color);
+        const node = cy.getElementById(nodeId);
+        node.style({
+          'background-color': color,
+          'border-width': nodeId === root ? 6 : 2,
+          'border-color': nodeId === root ? '#000' : '#666',
+          'border-style': nodeId === root ? 'double' : 'solid'
+        });
       });
       colorIndex++;
     });
@@ -111,42 +116,66 @@ export function GraphDesigner() {
     updateSubgraphColors();
   };
 
-  const addEdge = () => {
-    if (!cy) return;
+  const addEdge = (directed: boolean) => {
+    if (!cy || selectedNodes.length !== 2) return;
 
-    if (!sourceNode || !targetNode) {
-      setError("Please specify both source and target vertices");
-      return;
-    }
-
+    const [sourceNode, targetNode] = selectedNodes;
     const source = cy.getElementById(sourceNode);
     const target = cy.getElementById(targetNode);
 
-    if (source.length === 0) {
-      setError(`Source vertex "${sourceNode}" not found`);
-      return;
-    }
+    // Check if edge already exists in either direction for undirected graphs
+    const edgeExists = directed 
+      ? source.edgesTo(target).length > 0
+      : (source.edgesTo(target).length > 0 || target.edgesTo(source).length > 0);
 
-    if (target.length === 0) {
-      setError(`Target vertex "${targetNode}" not found`);
-      return;
-    }
-
-    if (source.edgesTo(target).length > 0) {
+    if (edgeExists) {
       setError("Edge already exists");
       return;
     }
 
-    cy.add({
-      group: 'edges',
-      data: {
-        source: sourceNode,
-        target: targetNode
+    // Calculate edge position to avoid overlapping
+    const existingEdges = cy.edges();
+    let offset = 0;
+    existingEdges.forEach(edge => {
+      if ((edge.source().id() === sourceNode && edge.target().id() === targetNode) ||
+          (!directed && edge.source().id() === targetNode && edge.target().id() === sourceNode)) {
+        offset += 20;
       }
     });
 
-    setSourceNode("");
-    setTargetNode("");
+    if (!directed) {
+      // For undirected edges, add two directed edges
+      cy.add([
+        {
+          group: 'edges',
+          data: { source: sourceNode, target: targetNode },
+          style: {
+            'curve-style': 'bezier',
+            'control-point-distance': offset
+          }
+        },
+        {
+          group: 'edges',
+          data: { source: targetNode, target: sourceNode },
+          style: {
+            'curve-style': 'bezier',
+            'control-point-distance': -offset
+          }
+        }
+      ]);
+    } else {
+      cy.add({
+        group: 'edges',
+        data: { source: sourceNode, target: targetNode },
+        style: {
+          'target-arrow-shape': 'triangle',
+          'curve-style': 'bezier',
+          'control-point-distance': offset
+        }
+      });
+    }
+
+    setSelectedNodes([]);
     setError("");
     updateSubgraphColors();
   };
@@ -155,6 +184,7 @@ export function GraphDesigner() {
     if (!cy) return;
     cy.elements(":selected").remove();
     updateSubgraphColors();
+    setSelectedNodes([]);
   };
 
   const fitGraph = () => {
@@ -186,9 +216,11 @@ export function GraphDesigner() {
         {
           selector: "node:selected",
           style: {
-            "border-width": 4,
+            "border-width": 6,
             "border-color": "#000",
             "border-opacity": 1,
+            "background-opacity": 0.8,
+            "overlay-opacity": 0.2,
           },
         },
         {
@@ -197,9 +229,6 @@ export function GraphDesigner() {
             width: 2,
             "line-color": "#666",
             "curve-style": "bezier",
-            "target-arrow-shape": "triangle",
-            "target-arrow-color": "#666",
-            "arrow-scale": 1.5,
           },
         },
         {
@@ -208,6 +237,7 @@ export function GraphDesigner() {
             width: 4,
             "line-color": "#000",
             "target-arrow-color": "#000",
+            "overlay-opacity": 0.2,
           },
         },
       ],
@@ -219,8 +249,22 @@ export function GraphDesigner() {
       boxSelectionEnabled: true,
     });
 
+    cyInstance.on("select", "node", (evt) => {
+      const nodeId = evt.target.id();
+      setSelectedNodes(prev => {
+        if (prev.includes(nodeId)) return prev;
+        return [...prev.slice(-1), nodeId].slice(0, 2);
+      });
+    });
+
+    cyInstance.on("unselect", "node", (evt) => {
+      const nodeId = evt.target.id();
+      setSelectedNodes(prev => prev.filter(id => id !== nodeId));
+    });
+
     cyInstance.on("boxstart", () => {
       cyInstance.elements().unselect();
+      setSelectedNodes([]);
     });
 
     document.addEventListener("keydown", (evt) => {
@@ -228,6 +272,7 @@ export function GraphDesigner() {
         evt.preventDefault();
         cyInstance.elements(":selected").remove();
         updateSubgraphColors();
+        setSelectedNodes([]);
       }
     });
 
@@ -275,16 +320,29 @@ export function GraphDesigner() {
                 <h3 className="font-medium mb-2">Add Edge</h3>
                 <div className="space-y-2">
                   <Input
-                    value={sourceNode}
-                    onChange={(e) => setSourceNode(e.target.value)}
-                    placeholder="Source vertex"
+                    value={selectedNodes[0] || ""}
+                    readOnly
+                    placeholder="First vertex (select on graph)"
                   />
                   <Input
-                    value={targetNode}
-                    onChange={(e) => setTargetNode(e.target.value)}
-                    placeholder="Target vertex"
+                    value={selectedNodes[1] || ""}
+                    readOnly
+                    placeholder="Second vertex (select on graph)"
                   />
-                  <Button onClick={addEdge} className="w-full">Add Edge</Button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button 
+                      onClick={() => addEdge(true)}
+                      disabled={selectedNodes.length !== 2}
+                    >
+                      Add Directed Edge
+                    </Button>
+                    <Button 
+                      onClick={() => addEdge(false)}
+                      disabled={selectedNodes.length !== 2}
+                    >
+                      Add Undirected Edge
+                    </Button>
+                  </div>
                 </div>
               </div>
 
@@ -332,26 +390,6 @@ export function GraphDesigner() {
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
-
-      <Card className="p-6">
-        <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
-          About Union-Find
-          <Info className="w-4 h-4 text-gray-400" />
-        </h2>
-        <div className="prose prose-sm max-w-none">
-          <p>
-            Union-Find is a powerful data structure used to track disjoint sets and their connections. It's particularly useful in:
-          </p>
-          <ul>
-            <li>Finding connected components in graphs</li>
-            <li>Detecting cycles in graphs</li>
-            <li>Building minimum spanning trees</li>
-          </ul>
-          <p>
-            The visualization above shows how Union-Find maintains sets using a tree structure, with each set having a representative element (root).
-          </p>
-        </div>
-      </Card>
     </div>
   );
 }
