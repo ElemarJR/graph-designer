@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, Trash2, Info, ExternalLink, ZoomIn } from "lucide-react";
+import { AlertCircle, Trash2, Info, ExternalLink, Search, Maximize2 } from "lucide-react";
 import { UnionFind } from "@/utils/UnionFind";
 
 const COLORS = [
@@ -38,9 +38,9 @@ export function GraphDesigner() {
     if (!cy) return;
 
     const uf = new UnionFind();
-    let operations: string[] = [];
+    const operations: string[] = [];
     
-    // Add all nodes to UnionFind
+    // Add nodes to UnionFind
     cy.nodes().forEach(node => {
       uf.makeSet(node.id());
       operations.push(`Adding vertex ${node.id()} to Union-Find`);
@@ -54,7 +54,7 @@ export function GraphDesigner() {
       uf.union(source, target);
     });
 
-    // Get all components and their roots
+    // Update colors
     const components = new Map<string, string[]>();
     cy.nodes().forEach(node => {
       const root = uf.find(node.id());
@@ -64,20 +64,20 @@ export function GraphDesigner() {
       components.get(root)?.push(node.id());
     });
 
-    // Assign colors to components and highlight roots
     let colorIndex = 0;
     components.forEach((nodes, root) => {
       const color = COLORS[colorIndex % COLORS.length];
       operations.push(`Component ${root}: ${nodes.join(", ")} (${color})`);
+      
       nodes.forEach(nodeId => {
-        const node = cy.getElementById(nodeId);
-        node.style({
+        cy.$id(nodeId).style({
           'background-color': color,
           'border-width': nodeId === root ? 6 : 2,
           'border-color': nodeId === root ? '#000' : '#666',
           'border-style': nodeId === root ? 'double' : 'solid'
         });
       });
+      
       colorIndex++;
     });
 
@@ -91,7 +91,12 @@ export function GraphDesigner() {
   const addNode = () => {
     if (!cy) return;
 
-    const id = nodeName || `v${nextNodeId}`;
+    const id = nodeName.trim() || `v${nextNodeId}`;
+    
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+      setError("Vertex name can only contain letters, numbers, underscores and hyphens");
+      return;
+    }
 
     if (cy.getElementById(id).length > 0) {
       setError(`Vertex "${id}" already exists`);
@@ -104,10 +109,20 @@ export function GraphDesigner() {
       y: cy.height() / 2
     };
 
+    // Calculate position in a circle around the center
+    const radius = 100; // raio do círculo
+    const nodeCount = cy.nodes().length;
+    const angle = (2 * Math.PI * nodeCount) / (nodeCount + 1); // distribuir uniformemente
+
+    const position = {
+      x: center.x + radius * Math.cos(angle),
+      y: center.y + radius * Math.sin(angle)
+    };
+
     cy.add({
       group: 'nodes',
       data: { id, color: COLORS[0] },
-      position: center
+      position: position
     });
 
     setNodeName("");
@@ -116,68 +131,62 @@ export function GraphDesigner() {
     updateSubgraphColors();
   };
 
-  const addEdge = (directed: boolean) => {
+  const addEdge = () => {
     if (!cy || selectedNodes.length !== 2) return;
 
     const [sourceNode, targetNode] = selectedNodes;
-    const source = cy.getElementById(sourceNode);
-    const target = cy.getElementById(targetNode);
-
-    // Check if edge already exists in either direction for undirected graphs
-    const edgeExists = directed 
-      ? source.edgesTo(target).length > 0
-      : (source.edgesTo(target).length > 0 || target.edgesTo(source).length > 0);
-
-    if (edgeExists) {
-      setError("Edge already exists");
+    
+    // Prevenir self-loops
+    if (sourceNode === targetNode) {
+      setError("Self-loops are not allowed");
       return;
     }
 
-    // Calculate edge position to avoid overlapping
-    const existingEdges = cy.edges();
-    let offset = 0;
-    existingEdges.forEach(edge => {
-      if ((edge.source().id() === sourceNode && edge.target().id() === targetNode) ||
-          (!directed && edge.source().id() === targetNode && edge.target().id() === sourceNode)) {
-        offset += 20;
-      }
-    });
-
-    if (!directed) {
-      // For undirected edges, add two directed edges
-      cy.add([
-        {
-          group: 'edges',
-          data: { source: sourceNode, target: targetNode },
-          style: {
-            'curve-style': 'bezier',
-            'control-point-distance': offset
-          }
-        },
-        {
-          group: 'edges',
-          data: { source: targetNode, target: sourceNode },
-          style: {
-            'curve-style': 'bezier',
-            'control-point-distance': -offset
-          }
-        }
-      ]);
-    } else {
-      cy.add({
-        group: 'edges',
-        data: { source: sourceNode, target: targetNode },
-        style: {
-          'target-arrow-shape': 'triangle',
-          'curve-style': 'bezier',
-          'control-point-distance': offset
-        }
+    try {
+      // Verificar aresta existente
+      const existingEdges = cy.edges().filter(edge => {
+        const s = edge.source().id();
+        const t = edge.target().id();
+        return (s === sourceNode && t === targetNode) || (s === targetNode && t === sourceNode);
       });
-    }
 
-    setSelectedNodes([]);
-    setError("");
-    updateSubgraphColors();
+      if (existingEdges.length > 0) {
+        setError("Edge already exists");
+        return;
+      }
+
+      // Preparar dados da aresta
+      const edgeData: cytoscape.ElementDefinition = {
+        group: 'edges' as 'edges',
+        data: { 
+          source: sourceNode, 
+          target: targetNode 
+        }
+      };
+
+      // Adicionar aresta primeiro
+      const newEdge = cy.add(edgeData);
+
+      // Depois aplicar os estilos
+      newEdge.style({
+        'curve-style': 'bezier',
+        'target-arrow-shape': 'none',
+        'line-color': '#666',
+        'width': 2
+      });
+
+      // Limpar seleção
+      cy.elements().unselect();
+      setSelectedNodes([]);
+      setError("");
+      
+      // Atualizar cores
+      updateSubgraphColors();
+
+    } catch (error) {
+      console.error("Error adding edge:", error);
+      setError("Failed to add edge");
+    }
   };
 
   const deleteSelected = () => {
@@ -229,6 +238,8 @@ export function GraphDesigner() {
             width: 2,
             "line-color": "#666",
             "curve-style": "bezier",
+            "target-arrow-color": "#666",
+            "target-arrow-shape": "none"
           },
         },
         {
@@ -237,7 +248,7 @@ export function GraphDesigner() {
             width: 4,
             "line-color": "#000",
             "target-arrow-color": "#000",
-            "overlay-opacity": 0.2,
+            "overlay-opacity": 0.2
           },
         },
       ],
@@ -283,101 +294,102 @@ export function GraphDesigner() {
     };
   }, []);
 
-  return (
-    <div className="flex flex-col gap-4 max-w-6xl mx-auto px-2">
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2">
-          <Card className="h-[700px] relative">
-            <div ref={cyRef} className="w-full h-full" />
-            <Button 
-              onClick={fitGraph}
-              className="absolute top-4 right-4 bg-white"
-              title="Fit Graph"
-            >
-              <ZoomIn className="w-4 h-4" />
-            </Button>
-          </Card>
-        </div>
+  useEffect(() => {
+    const handleKeyDown = (evt: KeyboardEvent) => {
+      if ((evt.ctrlKey || evt.metaKey) && evt.key === 'z') {
+        evt.preventDefault();
+        // Implementar lógica de undo aqui
+      }
+    };
 
-        <div className="space-y-4">
-          <Card className="p-4">
-            <h2 className="text-lg font-bold mb-4">Graph Controls</h2>
-            <div className="space-y-4">
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [cy]);
+
+  return (
+    <div className="h-screen flex flex-col p-4">
+      <div className="flex-1 grid grid-cols-[1fr,300px] gap-4">
+        <Card className="relative">
+          <div ref={cyRef} className="w-full h-full" />
+          <Button 
+            onClick={fitGraph}
+            className="absolute top-4 right-4 bg-black hover:bg-gray-800 text-white"
+            size="sm"
+            title="Fit Graph"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </Button>
+        </Card>
+
+        <div className="space-y-2 overflow-auto">
+          <Card className="p-3">
+            <div className="space-y-3">
               <div>
-                <h3 className="font-medium mb-2">Add Vertex</h3>
-                <div className="flex gap-2">
+                <Label className="text-sm font-medium">Add Vertex</Label>
+                <div className="flex gap-2 mt-1">
                   <Input
                     value={nodeName}
                     onChange={(e) => setNodeName(e.target.value)}
                     placeholder={`v${nextNodeId}`}
                     className="flex-1"
                   />
-                  <Button onClick={addNode}>Add</Button>
+                  <Button onClick={addNode} size="sm">Add</Button>
                 </div>
               </div>
 
               <div>
-                <h3 className="font-medium mb-2">Add Edge</h3>
-                <div className="space-y-2">
+                <Label className="text-sm font-medium">Add Edge</Label>
+                <div className="space-y-1 mt-1">
                   <Input
                     value={selectedNodes[0] || ""}
                     readOnly
-                    placeholder="First vertex (select on graph)"
+                    placeholder="First vertex"
+                    className="text-sm"
                   />
                   <Input
                     value={selectedNodes[1] || ""}
                     readOnly
-                    placeholder="Second vertex (select on graph)"
+                    placeholder="Second vertex"
+                    className="text-sm"
                   />
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button 
-                      onClick={() => addEdge(true)}
-                      disabled={selectedNodes.length !== 2}
-                    >
-                      Add Directed Edge
-                    </Button>
-                    <Button 
-                      onClick={() => addEdge(false)}
-                      disabled={selectedNodes.length !== 2}
-                    >
-                      Add Undirected Edge
-                    </Button>
-                  </div>
+                  <Button 
+                    onClick={addEdge}
+                    disabled={selectedNodes.length !== 2}
+                    size="sm"
+                    className="w-full"
+                  >
+                    Add Edge
+                  </Button>
                 </div>
               </div>
 
               <Button
                 variant="destructive"
                 onClick={deleteSelected}
+                size="sm"
                 className="w-full"
               >
-                <Trash2 className="w-4 h-4 mr-2" />
+                <Trash2 className="w-3 h-3 mr-1" />
                 Delete Selected
               </Button>
             </div>
           </Card>
 
-          <Card className="p-4">
-            <h2 className="text-lg font-bold mb-2">Union-Find State</h2>
-            <div className="space-y-4">
-              <div>
-                <h3 className="font-medium text-sm mb-1">Parent Array</h3>
-                <pre className="bg-gray-50 p-2 rounded text-xs">
-                  {JSON.stringify(ufState.parent, null, 2)}
-                </pre>
-              </div>
-              <div>
-                <h3 className="font-medium text-sm mb-1">Rank Array</h3>
-                <pre className="bg-gray-50 p-2 rounded text-xs">
-                  {JSON.stringify(ufState.rank, null, 2)}
-                </pre>
-              </div>
+          <Card className="p-3">
+            <Label className="text-sm font-medium">Union-Find State</Label>
+            <div className="space-y-2 mt-2">
+              <pre className="bg-slate-50 p-2 rounded text-xs">
+                {JSON.stringify(ufState.parent, null, 2)}
+              </pre>
+              <pre className="bg-slate-50 p-2 rounded text-xs">
+                {JSON.stringify(ufState.rank, null, 2)}
+              </pre>
             </div>
           </Card>
 
-          <Card className="p-4">
-            <h2 className="text-lg font-bold mb-2">Operations Log</h2>
-            <pre className="bg-gray-50 p-2 rounded text-xs whitespace-pre-wrap">
+          <Card className="p-3">
+            <Label className="text-sm font-medium">Operations Log</Label>
+            <pre className="bg-slate-50 p-2 rounded text-xs whitespace-pre-wrap mt-2">
               {lastOperation || "No operations performed yet"}
             </pre>
           </Card>
